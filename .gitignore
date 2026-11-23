@@ -1,0 +1,18 @@
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.blg
+*.brf
+*.synctex.gz
+
+# Quarto/knitr intermediates (superseded by report.tex workflow)
+analysis_files/
+analysis.rmarkdown
+
+# Run logs and session notes
+analysis_run.log
+STATUS.md

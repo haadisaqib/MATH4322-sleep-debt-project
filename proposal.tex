@@ -1,0 +1,108 @@
+\documentclass[10pt]{article}
+\usepackage[margin=0.75in,top=0.6in,bottom=0.6in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\setlist{nosep,leftmargin=1.2em,topsep=0pt,partopsep=0pt,parsep=0pt}
+
+\begin{document}
+
+\begin{center}
+{\Large \textbf{Project Proposal: Sleep Debt \& Screen Time}}\\[4pt]
+{\Large \textbf{Late-Night Phone Habits}}\\[8pt]
+{\normalsize Haadi Saqib \quad Umar Baig \quad Joseph Giap \quad Elias Angeles}\\[4pt]
+{\small \textit{MATH 4322, Group 1 \quad Instructor: Yabo Niu}}
+\end{center}
+
+\vspace{0.15in}
+\hrule
+\vspace{0.15in}
+
+\section*{1.\quad Group \& Members}
+\textbf{Group 1.} Haadi Saqib, Umar Baig, Joseph Giap, Elias Angeles.
+
+\section*{2.\quad Data Description}
+
+\textbf{Source \& Inspiration.}\quad We selected the Kaggle dataset \emph{``Sleep Debt \& Screen Time: Late-Night Phone Habits''} by Samar Talwar (CC BY-SA 4.0).\footnote{\url{https://www.kaggle.com/datasets/samartalwar/sleep-debt-and-screen-time-late-night-phone-habits}}
+It contains 8{,}500 records linking bedtime phone use, blue-light exposure, and next-day fatigue.
+As students, we've all noticed how a few extra minutes of scrolling bleeds into groggy mornings, so the topic felt personally relevant rather than abstract.
+The data are also unusually clean: every column is fully populated, the categoricals are consistent, and the numeric columns are already on sensible scales, which let us spend our effort on modeling instead of wrangling.
+With 8{,}500 rows, a 10-fold cross-validation gives folds of about 850 rows each, enough for random forests and neural nets to be meaningful without taking long to train on a laptop.
+The dataset also has both a natural continuous response (\texttt{next\_day\_fatigue\_score}) and a categorical one (\texttt{sleep\_debt\_category}), which fits a project that needs to compare regression and classification approaches.
+
+\textbf{Size.}\quad 8{,}500 observations $\times$ 18 variables; 0 missing values; $\approx$970\,KB CSV.
+
+\textbf{Variable descriptions.}
+
+\footnotesize
+\begin{tabularx}{\textwidth}{p{1.3in}p{1.05in}X}
+\toprule
+\textbf{Variable} & \textbf{Type} & \textbf{Description} \\
+\midrule
+\texttt{user\_id} & char (ID) & Anonymized ID; dropped before modeling. \\
+\texttt{age} & numeric (18 to 65) & Participant age in years. \\
+\texttt{gender} & factor (3) & Female / Male / Non-Binary. \\
+\texttt{occupation\_type} & factor (5) & Work/study context (Corporate, Remote Tech, Student, Healthcare, Freelance). \\
+\texttt{chronotype} & factor (3) & Circadian preference (Intermediate / Night Owl / Morning Lark). \\
+\texttt{bedtime\_phone\_minutes} & numeric (1 to 180) & Minutes of phone use after getting into bed. \\
+\texttt{primary\_bedtime\_app} & factor (6) & Dominant app (TikTok/Reels, YouTube, Streaming, Messaging, \ldots). \\
+\texttt{screen\_brightness\_pct} & numeric (10 to 100) & Screen brightness percentage. \\
+\texttt{blue\_light\_filter\_active} & factor (0/1) & Blue-light filter on or off. \\
+\texttt{caffeine\_post\_5pm\_mg} & numeric (0 to 250) & Caffeine after 5\,pm (mg). \\
+\texttt{physical\_activity\_min} & numeric (0 to 112) & Daily physical-activity minutes. \\
+\texttt{sleep\_latency\_min} & numeric (6 to 123) & Minutes to fall asleep. \\
+\texttt{total\_sleep\_hours} & numeric (3.2 to 9.8) & Total sleep obtained. \\
+\texttt{deep\_sleep\_pct} & numeric (8 to 28) & Share of sleep in deep stage. \\
+\texttt{rem\_sleep\_pct} & numeric (10 to 27) & Share of sleep in REM stage. \\
+\texttt{morning\_alarm\_snoozes} & numeric (0 to 7) & Alarm snooze count. \\
+\texttt{next\_day\_fatigue\_score} & numeric (1 to 10) & Self-rated next-day fatigue. \textbf{Response for Q1.} \\
+\texttt{sleep\_debt\_category} & ord.\ factor (4) & Optimal / Mild / Moderate / Severe. \textbf{Response for Q2.} \\
+\bottomrule
+\end{tabularx}
+\normalsize
+
+\section*{3.\quad Main Questions}
+
+\textbf{Response \& predictor variables.}\quad
+\textbf{Q1 (Regression).} Response: \texttt{next\_day\_fatigue\_score}.
+Predictors: age, gender, occupation, chronotype, bedtime\_phone\_minutes, primary\_bedtime\_app, screen\_brightness, blue\_light\_filter, caffeine, physical\_activity. A second ``full'' spec adds sleep-stage variables for maximal prediction.
+
+\textbf{Q2 (Classification).} Response: binary \texttt{severe\_debt} (1 = Severe Sleep Debt, 0 = otherwise).
+Predictors: the same habit/demographic variables as Q1, \emph{excluding} sleep-stage variables (which would leak the answer).
+
+\textbf{Prediction vs.\ inference.}\quad
+\textbf{Q1:} both. The linear-regression spec targets \emph{inference} (which habits matter, with coefficients/p-values), while the random-forest spec targets \emph{prediction} (lowest RMSE).
+\textbf{Q2:} primarily \emph{prediction} (flag at-risk individuals), with secondary inference via logistic-regression odds ratios.
+
+\textbf{Data questions.}\quad
+\begin{itemize}
+  \item \textbf{Q1:} Can bedtime phone habits and lifestyle factors predict next-day fatigue, and which factors are the strongest drivers?
+  \item \textbf{Q2:} Can we classify whether a person falls into Severe Sleep Debt from bedtime screen and lifestyle habits alone, and which model does so most reliably?
+\end{itemize}
+
+\section*{4.\quad Models \& Methods}
+
+\textbf{Q1:} \emph{Multiple linear regression} (interpretable coefficients, p-values, CIs) vs.\ \emph{random forest} (captures nonlinearity and interactions, variable importance, typically lower RMSE).
+
+\textbf{Q2:} \emph{Logistic regression} (interpretable odds ratios, ROC threshold tuning) vs.\ \emph{random forest} (robust to class imbalance, higher AUC).
+
+\textbf{Model comparison.} All models are compared via \textbf{10-fold cross-validation repeated 5 times} (\texttt{caret::trainControl}). The same CV folds are used for every model (shared \texttt{trainControl}) so comparisons are paired and fair. An 80/20 stratified train-test split (\texttt{set.seed(4322)}) reserves a final held-out test set touched only once at the end. For Q1 we report CV RMSE and $R^2$; for Q2 we report CV accuracy, sensitivity (recall on the rare $\sim$7.6\% Severe class), and AUC. Class imbalance in Q2 is handled via stratified sampling and class weights in the random forest.
+
+\section*{5.\quad Workload Distribution}
+
+\footnotesize
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{Member} & \textbf{Question / Model} & \textbf{Deliverables} \\
+\midrule
+Haadi Saqib & Q1: Linear Regression & Data loading, EDA, \texttt{lm} fits, CV RMSE, coefficient interpretation. \\
+Umar Baig & Q1: Random Forest & Forest tuning (\texttt{mtry}), variable importance, CV RMSE, comparison vs.\ linear. \\
+Joseph Giap & Q2: Logistic Regression & Binary response, \texttt{glm} fits, odds ratios, ROC + threshold tuning, CV AUC. \\
+Elias Angeles & Q2: Random Forest & Forest with class weights, variable importance, CV metrics, final report assembly. \\
+\bottomrule
+\end{tabularx}
+\normalsize
+
+\end{document}

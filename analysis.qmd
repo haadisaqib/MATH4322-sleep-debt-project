@@ -1,0 +1,769 @@
+---
+title: "Sleep Debt & Screen Time: Late-Night Phone Habits"
+subtitle: "MATH 4322 Group Project — Group 1"
+author: "Haadi Saqib, Umar Baig, Joseph Giap, Elias Angeles"
+date: "November 2026"
+format:
+  pdf:
+    documentclass: article
+    fontsize: 10pt
+    geometry: "margin=0.9in"
+    number-sections: true
+    toc: true
+    toc-depth: 2
+    colorlinks: true
+    linkcolor: blue
+    urlcolor: blue
+    header-includes:
+      - \usepackage{booktabs}
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+Almost all of us have had the same evening: we get into bed "just to check one thing," and forty-five minutes of scrolling later we are still awake, the screen still bright, and the alarm is only a few hours away. We wanted to know whether that habit leaves a measurable mark. In this project we study the Kaggle dataset *Sleep Debt & Screen Time: Late Night Phone Habits* (Samar Talwar, CC BY-SA 4.0), which records 8,500 nights of bedtime phone use together with sleep physiology and next-day fatigue for 8,500 individuals.
+
+We ask two questions on this single dataset, one regression question and one classification question, so that we can compare multiple model families on each:
+
+- **Q1 (Regression):** *Can bedtime phone habits and lifestyle factors predict next-day fatigue (`next_day_fatigue_score`, 1–10), and which factors are the strongest drivers?*
+- **Q2 (Classification):** *Can we flag whether a person falls into Severe Sleep Debt (`sleep_debt_category`) using only their bedtime screen and lifestyle habits — that is, without looking at their sleep measurements — and which model does so most reliably?*
+
+For Q1 we use **multiple linear regression** (our inference-friendly baseline) and **random forests** (our flexible predictor), with a small **neural network** as a stretch-goal third comparison. For Q2 we use **logistic regression**, a **random forest**, and a single **decision tree**. Every model is trained and compared on the *same* cross-validation folds, and all models are finally scored once on a held-out test set. Our modeling workflow follows ISLR2 (James et al.) and the `caret` pipeline used throughout MATH 4322.
+
+# Data Description
+
+## Source, size, and integrity
+
+We selected this dataset for four reasons. First, it is *personally relevant* — late-night phone use is something we and our peers do every night, which makes the conclusions easy to motivate. Second, it is *clean*: every one of the 8,500 × 18 cells is populated, so no imputation is needed and we can spend our effort on modeling rather than wrangling. Third, it is the *right size* for this course: 10-fold cross-validation folds contain ~850 rows each, enough for random forests and neural networks to be meaningful yet quick to train on a laptop. Fourth, it offers a *dual response structure* — a continuous response for regression and an ordered categorical response for classification — on the same observations.
+
+```{r}
+#| label: load-data
+#| echo: false
+library(caret)
+library(ranger)
+library(ggplot2)
+library(patchwork)
+library(pROC)
+library(nnet)
+library(rpart)
+
+theme_set(theme_bw(base_size = 10))
+options(knitr.kable.NA = "")
+
+sleep <- read.csv("bedtime_screentime_sleep_debt.csv", stringsAsFactors = FALSE)
+n_rows <- nrow(sleep)
+n_cols <- ncol(sleep)
+n_missing <- sum(is.na(sleep))
+```
+
+The raw file contains **`r n_rows` observations** and **`r n_cols` variables** with **`r n_missing` missing values** in total (~970 KB as CSV). We treat this project as a single-file analysis: the raw CSV ships alongside this Quarto document, and every split, fit, and metric below is reproducible from `set.seed(4322)`.
+
+## Variable dictionary
+
+```{r}
+#| label: dictionary
+#| echo: false
+dict <- data.frame(
+  Variable = c("user_id", "age", "gender", "occupation_type", "chronotype",
+               "bedtime_phone_minutes", "primary_bedtime_app", "screen_brightness_pct",
+               "blue_light_filter_active", "caffeine_post_5pm_mg", "physical_activity_min",
+               "sleep_latency_min", "total_sleep_hours", "deep_sleep_pct", "rem_sleep_pct",
+               "morning_alarm_snoozes", "next_day_fatigue_score", "sleep_debt_category"),
+  Type = c("character (ID)", "numeric", "factor (3)", "factor (5)", "factor (3)",
+           "numeric", "factor (6)", "numeric", "factor (2)", "numeric", "numeric",
+           "numeric", "numeric", "numeric", "numeric", "numeric (count)",
+           "numeric", "ordered factor (4)"),
+  Range_or_Levels = c("USR-00001 … USR-08500", "18–65", "Female / Male / Non-Binary",
+                      "Corporate, Remote Tech, Student, Healthcare, Freelance",
+                      "Intermediate / Night Owl / Morning Lark", "1–180 min",
+                      "TikTok/Reels, YouTube, Instagram/Reddit, Streaming, Messaging, News",
+                      "10–100 %", "Off / On", "0–250 mg", "0–112 min", "6–123 min",
+                      "3.2–9.8 hrs", "8–28 %", "9.6–27 %", "0–7", "1–10",
+                      "Optimal / Mild / Moderate / Severe"),
+  Description = c("Anonymized participant ID (dropped before modeling)",
+                  "Participant age in years", "Self-reported gender",
+                  "Work/study context affecting daily schedule", "Circadian preference",
+                  "Minutes of phone use after getting into bed (key exposure)",
+                  "Dominant app used before sleep", "Screen brightness percentage",
+                  "Blue-light filter / night mode active", "Caffeine intake after 5 pm (mg)",
+                  "Daily physical-activity minutes", "Minutes to fall asleep (latency)",
+                  "Total sleep obtained that night", "Share of sleep in deep stage",
+                  "Share of sleep in REM stage", "Times the morning alarm was snoozed",
+                  "Self-rated next-day fatigue (Q1 response)",
+                  "Sleep-debt severity class (Q2 response)")
+)
+knitr::kable(dict, col.names = c("Variable", "Type", "Range / Levels", "Description"),
+             caption = "Data dictionary for the 18 raw variables.")
+```
+
+## Preprocessing decisions
+
+We make four deliberate preprocessing choices before any modeling:
+
+1. **We drop `user_id`** — it is an anonymous label with no predictive meaning; keeping it would only invite leakage or accidental memorization.
+2. **We coerce all categorical columns to factors**, and we set `sleep_debt_category` as an *ordered* factor (`Optimal Recovery < Mild Deficit < Moderate Debt < Severe Sleep Debt`).
+3. **We recode `blue_light_filter_active`** from the integer 0/1 to an explicit two-level factor (`Off`/`On`) so that `caret` dummy-codes it consistently for every model.
+4. **We derive the binary Q2 response `severe_debt`** (`Severe` if `sleep_debt_category == "Severe Sleep Debt"`, else `No`). Severe is the rare class (~`r round(100 * sum(sleep$sleep_debt_category == "Severe Sleep Debt") / n_rows, 1)`% of rows), and it is the practically important outcome to flag.
+
+```{r}
+#| label: prep
+#| echo: true
+sleep$user_id <- NULL
+sleep$gender <- factor(sleep$gender)
+sleep$occupation_type <- factor(sleep$occupation_type)
+sleep$chronotype <- factor(sleep$chronotype)
+sleep$primary_bedtime_app <- factor(sleep$primary_bedtime_app)
+sleep$blue_light_filter_active <- factor(sleep$blue_light_filter_active,
+                                         levels = c(0, 1), labels = c("Off", "On"))
+sleep$sleep_debt_category <- factor(sleep$sleep_debt_category, ordered = TRUE,
+                                    levels = c("Optimal Recovery", "Mild Deficit",
+                                               "Moderate Debt", "Severe Sleep Debt"))
+sleep$severe_debt <- factor(ifelse(sleep$sleep_debt_category == "Severe Sleep Debt",
+                                   "Severe", "No"),
+                            levels = c("No", "Severe"))
+```
+
+## Which predictors go into which question?
+
+A subtle but important design decision for us was *which predictors each question is allowed to see*. The sleep-physiology columns (`total_sleep_hours`, `deep_sleep_pct`, `rem_sleep_pct`, `sleep_latency_min`, `morning_alarm_snoozes`) are essentially the *ingredients* from which sleep debt is computed, so letting Q2 use them would leak the answer. We therefore give Q2 only the ten habit/demographic variables. For Q1 we run two predictor sets:
+
+- **(A-habits)** demographics + phone/screen + caffeine + activity — the *inference* spec, with no sleep measurements at all, so the coefficients answer "which *habits* drive tomorrow's fatigue?";
+- **(A-full)** the habits spec plus `total_sleep_hours`, `deep_sleep_pct`, `rem_sleep_pct`, `morning_alarm_snoozes` — the *prediction* spec, for the lowest achievable error.
+
+We exclude `sleep_latency_min` from both Q1 specs: latency sits on the causal pathway from phone use to fatigue (phone use → harder time falling asleep → fatigue), so including it would absorb the very effect we want the habit variables to capture.
+
+# Exploratory Data Analysis
+
+We first split off the test set (§\ref{methodology}) and perform all EDA on the 80% training portion, so our eyes never guide decisions using test data.
+
+```{r}
+#| label: split
+#| echo: true
+set.seed(4322)
+train_id <- createDataPartition(sleep$severe_debt, p = 0.8, list = FALSE)
+tr <- sleep[train_id, ]
+te <- sleep[-train_id, ]
+```
+
+```{r}
+#| label: split-check
+#| echo: false
+tab_split <- rbind(Training = c(sum(tr$severe_debt == "Severe"), sum(tr$severe_debt == "No")),
+                   Test = c(sum(te$severe_debt == "Severe"), sum(te$severe_debt == "No")))
+colnames(tab_split) <- c("Severe", "No")
+tab_split <- cbind(Set = rownames(tab_split), as.data.frame(tab_split))
+rownames(tab_split) <- NULL
+knitr::kable(tab_split, caption = "The 80/20 stratified split preserves the rare Severe class in both sets.")
+```
+
+## Response distributions
+
+The Q1 response `next_day_fatigue_score` is right-skewed (mean `r round(mean(tr$next_day_fatigue_score), 2)`, median `r round(median(tr$next_day_fatigue_score), 1)`, range 1–10): most people report moderate fatigue, but a visible minority sits at the extreme end. The Q2 response is heavily imbalanced — in the training set only about `r round(100 * mean(tr$severe_debt == "Severe"), 1)`% of rows are Severe, which shapes our choice of metrics later (we care about AUC and sensitivity, not raw accuracy).
+
+```{r}
+#| label: fig-responses
+#| echo: false
+#| fig-cap: "Responses. Left: distribution of next-day fatigue (Q1, continuous). Right: class balance of sleep-debt category (Q2), with the rare Severe class highlighted."
+#| fig-width: 7
+#| fig-height: 2.9
+p1 <- ggplot(tr, aes(x = next_day_fatigue_score)) +
+  geom_histogram(binwidth = 0.5, fill = "steelblue", color = "white") +
+  labs(x = "Next-day fatigue score (1–10)", y = "Count",
+       title = "Q1 response: fatigue score")
+
+cats <- as.data.frame(table(tr$sleep_debt_category))
+colnames(cats) <- c("Cat", "n")
+cats$Cat <- factor(cats$Cat, levels = levels(tr$sleep_debt_category))
+p2 <- ggplot(cats, aes(x = Cat, y = n, fill = Cat == "Severe Sleep Debt")) +
+  geom_col() + scale_fill_manual(values = c("grey60", "firebrick"), guide = "none") +
+  labs(x = NULL, y = "Count", title = "Q2 response: sleep-debt category") +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+
+p1 + p2
+```
+
+## How do habits relate to fatigue?
+
+```{r}
+#| label: fig-app-box
+#| echo: false
+#| fig-cap: "Next-day fatigue by primary bedtime app (left) and chronotype (right). TikTok/Reels users report noticeably higher median fatigue; News/Reading users the lowest."
+#| fig-width: 7
+#| fig-height: 3
+app_order <- names(sort(tapply(tr$next_day_fatigue_score, tr$primary_bedtime_app, median)))
+tr$app_f <- factor(tr$primary_bedtime_app, levels = app_order)
+p1 <- ggplot(tr, aes(x = app_f, y = next_day_fatigue_score, fill = app_f)) +
+  geom_boxplot(show.legend = FALSE, outlier.size = 0.4) +
+  labs(x = NULL, y = "Next-day fatigue", title = "Fatigue by bedtime app") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+p2 <- ggplot(tr, aes(x = chronotype, y = next_day_fatigue_score, fill = chronotype)) +
+  geom_boxplot(show.legend = FALSE, outlier.size = 0.4) +
+  labs(x = NULL, y = "", title = "Fatigue by chronotype")
+p1 + p2
+```
+
+```{r}
+#| label: fig-scatter
+#| echo: false
+#| fig-cap: "Bedtime phone minutes vs. next-day fatigue, faceted by blue-light filter status. Fatigue rises with phone minutes in both panels; the filter (right) appears to dampen the trend slightly."
+#| fig-width: 6.6
+#| fig-height: 3
+set.seed(4322)
+samp <- tr[sample(nrow(tr), 3500), ]
+ggplot(samp, aes(x = bedtime_phone_minutes, y = next_day_fatigue_score,
+                 color = sleep_debt_category)) +
+  geom_point(alpha = 0.35, size = 0.7) +
+  facet_wrap(~ blue_light_filter_active) +
+  geom_smooth(method = "loess", se = FALSE, color = "black", linewidth = 0.6) +
+  scale_color_brewer(palette = "RdYlBu", name = "Sleep debt") +
+  labs(x = "Bedtime phone minutes", y = "Next-day fatigue")
+```
+
+Two patterns stand out to us. First, fatigue climbs steadily with `bedtime_phone_minutes`, and the severe-debt cases (dark red) concentrate in the high-phone-minutes corner — encouraging for both questions. Second, short-video apps (TikTok/Reels) show visibly higher fatigue than News/Reading, suggesting *what* people do on the phone matters, not just how long.
+
+## Numeric summary and correlations
+
+```{r}
+#| label: tab-numsum
+#| echo: false
+numvars <- c("age", "bedtime_phone_minutes", "screen_brightness_pct", "caffeine_post_5pm_mg",
+             "physical_activity_min", "total_sleep_hours", "deep_sleep_pct", "rem_sleep_pct",
+             "morning_alarm_snoozes", "next_day_fatigue_score")
+sm <- t(vapply(tr[numvars], function(x)
+  c(Min = min(x), Q1 = quantile(x, .25), Median = median(x), Mean = mean(x),
+    SD = sd(x), Q3 = quantile(x, .75), Max = max(x)), numeric(7)))
+knitr::kable(round(sm, 2),
+             caption = "Summary of key numeric variables (training set).")
+```
+
+```{r}
+#| label: fig-corr
+#| echo: false
+#| fig-cap: "Correlations among numeric predictors and the Q1 response. Fatigue correlates most strongly (negatively) with total sleep hours and deep-sleep share, and positively with phone minutes and snoozes."
+#| fig-width: 6.2
+#| fig-height: 5
+allnum <- c(numvars, "sleep_latency_min")
+cm <- cor(tr[allnum])
+cm_df <- data.frame(expand.grid(Var1 = allnum, Var2 = allnum), Cor = as.vector(cm))
+cm_df$Var1 <- factor(cm_df$Var1, levels = rev(allnum))
+cm_df$Var2 <- factor(cm_df$Var2, levels = allnum)
+ggplot(cm_df, aes(x = Var2, y = Var1, fill = Cor)) +
+  geom_tile() + geom_text(aes(label = sprintf("%.2f", Cor)), size = 2.1) +
+  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b",
+                       limits = c(-1, 1), name = "Pearson r") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The correlation matrix tells us where predictive signal lives: `next_day_fatigue_score` correlates strongly with the sleep-physiology block (`total_sleep_hours` $r \approx -0.9$, `deep_sleep_pct`, `morning_alarm_snoozes`), which is exactly why we keep those columns out of the *habits* spec — we want to know how much signal the habits alone carry. Within the habits block, correlations are mild (largest $|r| < 0.25$), so multicollinearity is not a serious concern for our linear models.
+
+# Methodology
+
+```{r}
+#| label: methodology
+#| echo: false
+f_habits <- next_day_fatigue_score ~ age + gender + occupation_type + chronotype +
+  bedtime_phone_minutes + primary_bedtime_app + screen_brightness_pct +
+  blue_light_filter_active + caffeine_post_5pm_mg + physical_activity_min
+f_full <- update(f_habits, . ~ . + total_sleep_hours + deep_sleep_pct +
+                   rem_sleep_pct + morning_alarm_snoozes)
+f_severe <- severe_debt ~ age + gender + occupation_type + chronotype +
+  bedtime_phone_minutes + primary_bedtime_app + screen_brightness_pct +
+  blue_light_filter_active + caffeine_post_5pm_mg + physical_activity_min
+```
+
+## One shared resampling plan for every model
+
+Fair model comparison requires that every model be judged on the *same* data splits. We therefore build the cross-validation folds ourselves and hand the identical fold list to `caret` for every model. We use **10-fold cross-validation, repeated 5 times** (50 resamples total), stratified on the Q2 response so each fold contains the same proportion of Severe cases.
+
+```{r}
+#| label: folds
+#| echo: true
+set.seed(4322)
+fold_index <- vector("list", 50)
+for (r in 1:5) {
+  these <- createFolds(tr$severe_debt, k = 10, returnTrain = TRUE)
+  for (k in 1:10) {
+    fold_index[[ (r - 1) * 10 + k ]] <- these[[k]]
+  }
+  names(fold_index)[((r - 1) * 10 + 1):(r * 10)] <-
+    sprintf("Rep%d.F%02d", r, 1:10)
+}
+
+ctrl_q1 <- trainControl(method = "cv", index = fold_index)
+
+ctrl_q2 <- trainControl(method = "cv", index = fold_index,
+                        classProbs = TRUE,
+                        summaryFunction = twoClassSummary)
+```
+
+A single 20% test set (created above) is touched **exactly once per question**, at the very end, for the final unbiased error estimate. All tuning and model selection happen inside CV on the 80% training portion.
+
+## Metrics and imbalance handling
+
+- **Q1:** we compare models by CV **RMSE** and **R²**; the test set gives the final RMSE.
+- **Q2:** because only ~7.6% of cases are Severe, raw accuracy is nearly meaningless (a "always No" classifier scores ~92%). We therefore prioritize **AUC** and **sensitivity (recall on Severe)**, report specificity, and — instead of accepting the arbitrary 0.5 cutoff — tune the classification *threshold* on out-of-fold probabilities to maximize Youden's J (sensitivity + specificity − 1).
+- For the random forest in Q2 we additionally set **class weights** proportional to the inverse class frequencies, so misclassifying a Severe night costs the forest roughly as much as misclassifying ten non-severe ones.
+- Because our folds are shared, we can make **paired comparisons** across the 50 resamples (a paired t-test on per-fold errors) rather than eyeballing two independent CV estimates.
+
+# Question A — Predicting Next-Day Fatigue (Regression)
+
+## The inference view: multiple linear regression on habits
+
+We first fit the interpretable model on the habits-only training data.
+
+```{r}
+#| label: lm-habits
+#| echo: true
+set.seed(4322)
+fit_lm_habits <- lm(f_habits, data = tr)
+```
+
+```{r}
+#| label: tab-lm-coef
+#| echo: false
+coef_tab <- function(model) {
+  s <- summary(model)$coefficients
+  ci <- confint.default(model)
+  out <- data.frame(Term = rownames(s), Estimate = s[, 1], SE = s[, 2],
+                    Lower = ci[, 1], Upper = ci[, 2], Stat = s[, 3], p = s[, 4],
+                    row.names = NULL)
+  out$p <- ifelse(out$p < 0.001, "<0.001", sprintf("%.3f", out$p))
+  out
+}
+knitr::kable(coef_tab(fit_lm_habits), digits = 3,
+             caption = "Habits-only linear regression (Q1, inference spec). Wald 95% CIs.")
+```
+
+Reading the coefficients, several findings stand out to us. **Longer bedtime phone use and higher caffeine intake raise next-day fatigue** (positive estimates, $p < 0.001$), while **age** shows a small negative coefficient — older participants report slightly less fatigue, all else equal. Among the app categories, short-video apps carry a fatigue penalty relative to the baseline, and keeping the **blue-light filter On** is associated with *lower* fatigue than Off. The chronotype effects are modest: Night Owls report somewhat more fatigue than Intermediate types. We should stress that these are *associational* estimates from an observational dataset — but they are exactly the kind of interpretable summary the habits spec was designed to deliver.
+
+```{r}
+#| label: fig-lm-diag
+#| echo: false
+#| fig-cap: "Diagnostics for the habits-only linear model. Residuals vs. fitted (left) and normal QQ plot (right). The discrete, banded response creates striping, and heavy right-tail cases bend the QQ plot — typical for a bounded 1–10 score."
+#| fig-width: 7
+#| fig-height: 3
+d_diag <- data.frame(Fitted = fitted(fit_lm_habits),
+                     Resid = resid(fit_lm_habits),
+                     StdResid = rstandard(fit_lm_habits))
+p1 <- ggplot(d_diag, aes(x = Fitted, y = Resid)) +
+  geom_point(alpha = 0.25, size = 0.6) +
+  geom_hline(yintercept = 0, color = "firebrick", linetype = "dashed") +
+  geom_smooth(se = FALSE, color = "steelblue", linewidth = 0.5) +
+  labs(title = "Residuals vs. fitted")
+p2 <- ggplot(d_diag, aes(sample = StdResid)) +
+  stat_qq(size = 0.6, alpha = 0.3) + stat_qq_line(color = "firebrick", linetype = "dashed") +
+  labs(title = "Normal QQ plot", x = "Theoretical quantiles", y = "Standardized residuals")
+p1 + p2
+```
+
+The diagnostics are honest about the linear model's limits: because the response takes many discrete-ish values on a 1–10 scale, the residual plot stripes, and the QQ plot shows a heavy upper tail — the most-fatigued people are *more* fatigued than a Gaussian error model expects. The linear model remains a serviceable and highly interpretable baseline, but a flexible model should do better on the tail.
+
+## The prediction view: random forest (and a neural network) on the full spec
+
+```{r}
+#| label: q1-models
+#| echo: false
+#| eval: true
+set.seed(4322)
+fit_lm_full <- train(f_full, data = tr, method = "lm",
+                     trControl = ctrl_q1)
+
+set.seed(4322)
+fit_rf_full <- train(f_full, data = tr, method = "ranger",
+                     trControl = ctrl_q1,
+                     tuneGrid = data.frame(mtry = c(2, 4, 6, 8, 11),
+                                           splitrule = "variance",
+                                           min.node.size = 5),
+                     num.threads = 1,
+                     importance = "permutation")
+
+set.seed(4322)
+fit_nn_full <- train(f_full, data = tr, method = "nnet",
+                     trControl = ctrl_q1,
+                     preProcess = c("center", "scale"),
+                     tuneGrid = expand.grid(size = c(2, 5), decay = c(0.01, 0.1)),
+                     linout = TRUE, trace = FALSE, maxit = 300, MaxNWts = 5000)
+```
+
+## Model comparison on shared CV folds
+
+```{r}
+#| label: q1-cv
+#| echo: false
+res_q1 <- resamples(list(`LM (habits)` = train(f_habits, data = tr, method = "lm",
+                                               trControl = ctrl_q1),
+                          `LM (full)` = fit_lm_full,
+                          `RF (full)` = fit_rf_full,
+                          `NN (full)` = fit_nn_full))
+s1 <- summary(res_q1)$statistics
+cv_tab <- data.frame(
+  Model = rownames(s1$RMSE),
+  CV_RMSE = s1$RMSE[, "Mean"], RMSE_SE = s1$RMSE[, "Mean"] / sqrt(50),
+  CV_R2 = s1$Rsquared[, "Mean"], R2_SE = s1$Rsquared[, "Mean"] / sqrt(50))
+knitr::kable(cv_tab, digits = 3,
+             caption = "10-fold CV (repeated 5×, shared folds) for Q1. SE is the standard error of the CV mean across the 50 resamples.")
+```
+
+```{r}
+#| label: fig-q1-cv
+#| echo: false
+#| fig-cap: "Per-fold CV RMSE across the 50 shared resamples. The random forest's fold-level RMSE distribution sits clearly below both linear models."
+#| fig-width: 6.4
+#| fig-height: 3
+rsq_df <- as.data.frame(res_q1$values)
+rsq_long <- do.call(rbind, lapply(seq_len(nrow(rsq_df)), function(i) {
+  data.frame(Model = c("LM (habits)", "LM (full)", "RF (full)", "NN (full)"),
+             RMSE = as.numeric(rsq_df[i, grep("\\.RMSE$", colnames(rsq_df))]))
+}))
+ggplot(rsq_long, aes(x = Model, y = RMSE, fill = Model)) +
+  geom_boxplot(show.legend = FALSE, outlier.size = 0.5) +
+  labs(y = "Fold RMSE (10-fold CV, 5 repeats)", x = NULL)
+```
+
+```{r}
+#| label: q1-paired
+#| echo: false
+d1 <- diff(res_q1, metric = "RMSE")
+pt1 <- summary(d1)$table
+paired_tab <- data.frame(Comparison = rownames(pt1),
+                         Mean_Difference = pt1[, "mean"],
+                         t_stat = pt1[, "statistic"],
+                         p_value = ifelse(pt1[, "pvalue"] < 0.001, "<0.001",
+                                          sprintf("%.3f", pt1[, "pvalue"])))
+knitr::kable(paired_tab, digits = 3,
+             caption = "Paired comparison of CV RMSE across the 50 shared folds (positive difference = row model has *lower* error than column model).")
+```
+
+Because all four models saw the identical 50 folds, the paired t-test is meaningful: the random forest beats both linear models by a wide, statistically significant margin on RMSE ($p < 0.001$ in both pairings). The neural network lands in between — better than the linear baselines, but it does not catch the forest, which matches the ISLR narrative that trees-plus-ensembling handles the nonlinearities and interactions (e.g., phone minutes × chronotype) that a linear surface cannot.
+
+## Final evaluation on the held-out test set
+
+```{r}
+#| label: q1-test
+#| echo: false
+te_lm_h <- data.frame(pred = predict(fit_lm_habits, te), obs = te$next_day_fatigue_score)
+te_lm_f <- data.frame(pred = predict(fit_lm_full, te), obs = te$next_day_fatigue_score)
+te_rf   <- data.frame(pred = predict(fit_rf_full, te), obs = te$next_day_fatigue_score)
+te_nn   <- data.frame(pred = predict(fit_nn_full, te), obs = te$next_day_fatigue_score)
+
+rmse <- function(o, p) sqrt(mean((o - p)^2))
+r2 <- function(o, p) 1 - sum((o - p)^2) / sum((o - mean(o))^2)
+q1_test_tab <- data.frame(
+  Model = c("LM (habits)", "LM (full)", "RF (full)", "NN (full)"),
+  Test_RMSE = c(rmse(te_lm_h$obs, te_lm_h$pred), rmse(te_lm_f$obs, te_lm_f$pred),
+                rmse(te_rf$obs, te_rf$pred), rmse(te_nn$obs, te_nn$pred)),
+  Test_R2 = c(r2(te_lm_h$obs, te_lm_h$pred), r2(te_lm_f$obs, te_lm_f$pred),
+              r2(te_rf$obs, te_rf$pred), r2(te_nn$obs, te_nn$pred)))
+knitr::kable(q1_test_tab, digits = 3,
+             caption = "Held-out test performance for Q1 (touched once, at the end).")
+```
+
+```{r}
+#| label: q1-boot
+#| echo: false
+set.seed(4322)
+boot_rmse <- replicate(1000, {
+  i <- sample(nrow(te_rf), nrow(te_rf), replace = TRUE)
+  rmse(te_rf$obs[i], te_rf$pred[i])
+})
+boot_ci <- quantile(boot_rmse, c(0.025, 0.975))
+```
+
+The random forest is our best Q1 model with a test RMSE of **`r sprintf("%.2f", q1_test_tab$Test_RMSE[3])`** (R² = `r sprintf("%.2f", q1_test_tab$Test_R2[3])`), and a bootstrap 95% CI on that RMSE of [`r sprintf("%.2f", boot_ci[1])`, `r sprintf("%.2f", boot_ci[2])`] (1,000 bootstrap resamples of the test set, ISLR Ch. 5). In practical terms, our best model predicts next-day fatigue to within roughly `r sprintf("%.1f", q1_test_tab$Test_RMSE[3])` points on a 1–10 scale, versus about `r sprintf("%.1f", q1_test_tab$Test_RMSE[1])` for the habits-only linear model — and the habits model is the one that can *explain*, not just predict.
+
+## What drives fatigue? Variable importance
+
+```{r}
+#| label: fig-q1-imp
+#| echo: false
+#| fig-cap: "Permutation variable importance for the Q1 random forest (full spec)."
+#| fig-width: 6.4
+#| fig-height: 3.2
+imp1 <- varImp(fit_rf_full)$importance
+imp1$Var <- rownames(imp1)
+imp1 <- imp1[order(imp1$Overall), ]
+imp1$Var <- factor(imp1$Var, levels = imp1$Var)
+ggplot(imp1, aes(x = Overall, y = Var)) +
+  geom_col(fill = "steelblue") +
+  labs(x = "Permutation importance", y = NULL, title = "Random forest importance — Q1")
+```
+
+The forest's importance ranking confirms the correlation analysis: **total sleep hours, deep-sleep share, and morning snoozes** dominate, with **bedtime phone minutes** as the strongest habit-side driver and **chronotype** next. This is a satisfying result for us: the flexible model rediscovers the physiology we hid from the habits spec, but still ranks bedtime phone use as the top *modifiable* behavior.
+
+# Question B — Flagging Severe Sleep Debt (Classification)
+
+## Logistic regression on habits
+
+```{r}
+#| label: q2-models
+#| echo: false
+set.seed(4322)
+fit_glm <- train(f_severe, data = tr, method = "glm",
+                 trControl = ctrl_q2, metric = "ROC")
+
+set.seed(4322)
+w_sev <- sum(tr$severe_debt == "No") / sum(tr$severe_debt == "Severe")
+fit_rf_q2 <- train(f_severe, data = tr, method = "ranger",
+                   trControl = ctrl_q2, metric = "ROC",
+                   tuneGrid = data.frame(mtry = c(2, 4, 6, 8),
+                                         splitrule = "gini",
+                                         min.node.size = 10),
+                   class.weights = c(No = 1, Severe = w_sev),
+                   num.threads = 1,
+                   importance = "permutation")
+
+set.seed(4322)
+fit_tree_q2 <- train(f_severe, data = tr, method = "rpart",
+                     trControl = ctrl_q2, metric = "ROC",
+                     tuneLength = 8)
+```
+
+```{r}
+#| label: tab-glm-or
+#| echo: false
+gm <- fit_glm$finalModel
+s <- summary(gm)$coefficients
+ci <- suppressMessages(confint.default(gm))
+or <- data.frame(Term = rownames(s), OR = exp(s[, 1]),
+                 OR_Lower = exp(ci[, 1]), OR_Upper = exp(ci[, 2]),
+                 p = s[, 4], row.names = NULL)
+or$p <- ifelse(or$p < 0.001, "<0.001", sprintf("%.3f", or$p))
+knitr::kable(or, digits = 3,
+             caption = "Logistic regression odds ratios for Severe Sleep Debt (Q2). OR > 1 means higher odds of severe debt.")
+```
+
+The odds ratios give us the inference lens for Q2. **Each additional 30 minutes of bedtime phone use multiplies the odds of severe debt by `r sprintf("%.2f", exp(coef(gm)["bedtime_phone_minutes"])^30)`** (OR `r sprintf("%.2f", exp(coef(gm)["bedtime_phone_minutes"]))` per minute) — by far the strongest habit effect. Higher screen brightness raises the odds, while keeping the **blue-light filter on cuts them by roughly a third** (OR `r sprintf("%.2f", exp(coef(gm)["blue_light_filter_activeOn"]))`). Relative to TikTok/Reels users, News/Reading users have dramatically lower severe-debt odds, and late caffeine again points the wrong way. Demographics (age, gender) matter little once habits are known — which is good news for us: the risky behavior is the *bedtime routine*, not who you are.
+
+## Model comparison on shared CV folds
+
+```{r}
+#| label: q2-cv
+#| echo: false
+res_q2 <- resamples(list(`Logistic` = fit_glm, `Tree` = fit_tree_q2, `RF (weighted)` = fit_rf_q2))
+s2 <- summary(res_q2)$statistics
+cv2 <- data.frame(
+  Model = rownames(s2$ROC),
+  CV_AUC = s2$ROC[, "Mean"], AUC_SE = s2$ROC[, "Mean"] / sqrt(50),
+  CV_Sens = s2$Sens[, "Mean"], CV_Spec = s2$Spec[, "Mean"])
+knitr::kable(cv2, digits = 3,
+             caption = "10-fold CV (repeated 5×, shared folds) for Q2. Sensitivity/Specificity at the default 0.5 threshold; AUC is threshold-free.")
+```
+
+```{r}
+#| label: fig-q2-cv
+#| echo: false
+#| fig-cap: "Per-fold CV AUC across the 50 shared resamples for Q2."
+#| fig-width: 6
+#| fig-height: 3
+rv <- as.data.frame(res_q2$values)
+mods2 <- c("Logistic", "Tree", "RF (weighted)")
+auc_long <- do.call(rbind, lapply(seq_len(nrow(rv)), function(i) {
+  data.frame(Model = mods2, AUC = as.numeric(rv[i, grep("\\.ROC$", colnames(rv))]))
+}))
+ggplot(auc_long, aes(x = Model, y = AUC, fill = Model)) +
+  geom_boxplot(show.legend = FALSE, outlier.size = 0.5) +
+  coord_cartesian(ylim = c(0.6, 1)) +
+  labs(y = "Fold AUC (10-fold CV, 5 repeats)", x = NULL)
+```
+
+```{r}
+#| label: q2-paired
+#| echo: false
+d2 <- diff(res_q2, metric = "ROC")
+pt2 <- summary(d2)$table
+paired2 <- data.frame(Comparison = rownames(pt2),
+                      Mean_Difference = pt2[, "mean"],
+                      t_stat = pt2[, "statistic"],
+                      p_value = ifelse(pt2[, "pvalue"] < 0.001, "<0.001",
+                                       sprintf("%.3f", pt2[, "pvalue"])))
+knitr::kable(paired2, digits = 3,
+             caption = "Paired comparison of CV AUC across the 50 shared folds (positive = row model better).")
+```
+
+The weighted random forest wins on AUC (CV `r sprintf("%.3f", cv2$CV_AUC[3])` ± `r sprintf("%.3f", cv2$AUC_SE[3])`), significantly above logistic regression (paired $p < 0.001$). The single tree trails both — as expected, since a pruned tree is the least flexible of the three — but it earns its keep as a *readable rule list* rather than as a predictor.
+
+## Choosing the decision threshold on out-of-fold predictions
+
+For each main model we generate out-of-fold probability estimates on the training set (re-fitting inside each of the first repeat's 10 folds and predicting on the held-out fold — every training row gets exactly one out-of-fold prediction), then pick the threshold maximizing Youden's J. The test set plays no role in this choice.
+
+```{r}
+#| label: threshold
+#| echo: false
+n_tr <- nrow(tr)
+oof_glm <- rep(NA_real_, n_tr)
+oof_rf  <- rep(NA_real_, n_tr)
+oof_tr  <- rep(NA_real_, n_tr)
+best_rf <- fit_rf_q2$bestTune
+
+for (f in 1:10) {
+  idx <- fold_index[[f]]
+  out <- setdiff(1:n_tr, idx)
+  g <- glm(f_severe, family = binomial, data = tr[idx, ])
+  oof_glm[out] <- predict(g, newdata = tr[out, ], type = "response")
+  r <- ranger(f_severe, data = tr[idx, ], num.trees = 500,
+              mtry = best_rf$mtry, splitrule = "gini",
+              min.node.size = best_rf$min.node.size,
+              class.weights = c(No = 1, Severe = w_sev),
+              probability = TRUE, seed = 4322, num.threads = 1)
+  oof_rf[out] <- predict(r, data = tr[out, ])$predictions[, "Severe"]
+  t <- rpart(f_severe, data = tr[idx, ], cp = fit_tree_q2$bestTune$cp)
+  oof_tr[out] <- predict(t, newdata = tr[out, ])[, "Severe"]
+}
+
+youden <- function(y, p) {
+  rr <- roc(y, p, levels = c("No", "Severe"), direction = "<", quiet = TRUE)
+  cc <- coords(rr, "best", best.method = "youden",
+               ret = c("threshold", "sensitivity", "specificity"))
+  cc
+}
+th_glm <- youden(tr$severe_debt, oof_glm)
+th_rf  <- youden(tr$severe_debt, oof_rf)
+th_tr  <- youden(tr$severe_debt, oof_tr)
+```
+
+```{r}
+#| label: tab-thresholds
+#| echo: false
+th_tab <- data.frame(
+  Model = c("Logistic", "RF (weighted)", "Tree"),
+  OOF_Threshold = c(th_glm["threshold"], th_rf["threshold"], th_tr["threshold"]),
+  OOF_Sens = c(th_glm["sensitivity"], th_rf["sensitivity"], th_tr["sensitivity"]),
+  OOF_Spec = c(th_glm["specificity"], th_rf["specificity"], th_tr["specificity"]))
+knitr::kable(th_tab, digits = 3,
+             caption = "Youden-optimal thresholds chosen on out-of-fold training probabilities.")
+```
+
+## Final evaluation on the held-out test set
+
+```{r}
+#| label: q2-test
+#| echo: false
+pr_glm <- predict(fit_glm, newdata = te, type = "prob")$Severe
+pr_rf  <- predict(fit_rf_q2, newdata = te, type = "prob")$Severe
+pr_tr  <- predict(fit_tree_q2, newdata = te, type = "prob")$Severe
+
+roc_glm <- roc(te$severe_debt, pr_glm, levels = c("No", "Severe"), direction = "<", quiet = TRUE)
+roc_rf  <- roc(te$severe_debt, pr_rf,  levels = c("No", "Severe"), direction = "<", quiet = TRUE)
+roc_tr  <- roc(te$severe_debt, pr_tr,  levels = c("No", "Severe"), direction = "<", quiet = TRUE)
+
+test_row <- function(name, probs, thr) {
+  pred <- factor(ifelse(probs >= thr, "Severe", "No"), levels = c("No", "Severe"))
+  cm <- confusionMatrix(pred, te$severe_debt, positive = "Severe")
+  data.frame(Model = name, Threshold = thr,
+             Accuracy = unname(cm$overall["Accuracy"]),
+             Sensitivity = unname(cm$byClass["Sensitivity"]),
+             Specificity = unname(cm$byClass["Specificity"]),
+             AUC = as.numeric(auc(switch(name,
+                                         Logistic = roc_glm,
+                                         `RF (weighted)` = roc_rf,
+                                         Tree = roc_tr))))
+}
+q2_tab <- rbind(test_row("Logistic", pr_glm, as.numeric(th_glm["threshold"])),
+                test_row("RF (weighted)", pr_rf, as.numeric(th_rf["threshold"])),
+                test_row("Tree", pr_tr, as.numeric(th_tr["threshold"])))
+knitr::kable(q2_tab, digits = 3,
+             caption = "Held-out test performance for Q2 at each model's Youden-tuned threshold (Sensitivity = recall on Severe).")
+```
+
+```{r}
+#| label: fig-q2-roc
+#| echo: false
+#| fig-cap: "Test-set ROC curves for the three Q2 models. The weighted random forest dominates across the operating range."
+#| fig-width: 5.2
+#| fig-height: 4.2
+roc_df <- rbind(
+  data.frame(Model = "Logistic", FPR = 1 - roc_glm$sensitivities, TPR = roc_glm$sensitivities),
+  data.frame(Model = "RF (weighted)", FPR = 1 - roc_rf$sensitivities, TPR = roc_rf$sensitivities),
+  data.frame(Model = "Tree", FPR = 1 - roc_tr$sensitivities, TPR = roc_tr$sensitivities))
+auc_lab <- data.frame(Model = c("Logistic", "RF (weighted)", "Tree"),
+                      AUC = c(auc(roc_glm), auc(roc_rf), auc(roc_tr)),
+                      x = c(0.62, 0.62, 0.62),
+                      y = c(0.55, 0.47, 0.39))
+ggplot(roc_df, aes(x = FPR, y = TPR, color = Model)) +
+  geom_path(linewidth = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_text(data = auc_lab, aes(x = x, y = y, label = sprintf("AUC = %.3f", AUC),
+                                color = Model), size = 3, show.legend = FALSE) +
+  coord_equal() +
+  labs(title = "Test ROC — Severe Sleep Debt", x = "False-positive rate", y = "True-positive rate",
+       color = NULL) +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: fig-q2-probs
+#| echo: false
+#| fig-cap: "Test-set predicted probability of Severe debt (random forest). The weighted model pushes the Severe mass above 0.5 while keeping most non-severe rows near 0."
+#| fig-width: 5.6
+#| fig-height: 2.8
+pd <- data.frame(Prob = pr_rf, True = te$severe_debt)
+ggplot(pd, aes(x = Prob, fill = True)) +
+  geom_histogram(bins = 40, position = "identity", alpha = 0.55) +
+  geom_vline(xintercept = as.numeric(th_rf["threshold"]), linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("No" = "steelblue", "Severe" = "firebrick"), name = "True class") +
+  labs(x = "Predicted P(Severe)", y = "Count")
+```
+
+On the test set the weighted random forest reaches **AUC = `r sprintf("%.3f", q2_tab$AUC[2])`**, with sensitivity **`r sprintf("%.2f", q2_tab$Sensitivity[2])`** at specificity **`r sprintf("%.2f", q2_tab$Specificity[2])`** using its tuned threshold. The class weighting and threshold tuning do exactly what we hoped: instead of the useless default behavior of flagging almost nobody, our model catches about two-thirds of true severe-debt cases while keeping false alarms under control. For a screening use case — "should this person tighten their bedtime routine?" — we would happily operate at even higher sensitivity and accept more false positives.
+
+## What flags severe debt? Variable importance and the tree's rules
+
+```{r}
+#| label: fig-q2-imp
+#| echo: false
+#| fig-cap: "Permutation variable importance for the Q2 random forest."
+#| fig-width: 6.2
+#| fig-height: 3
+imp2 <- varImp(fit_rf_q2)$importance
+imp2$Var <- rownames(imp2)
+imp2 <- imp2[order(imp2$Overall), ]
+imp2$Var <- factor(imp2$Var, levels = imp2$Var)
+ggplot(imp2, aes(x = Overall, y = Var)) +
+  geom_col(fill = "firebrick") +
+  labs(x = "Permutation importance", y = NULL, title = "Random forest importance — Q2")
+```
+
+```{r}
+#| label: tree-text
+#| echo: false
+#| results: asis
+cat("The pruned decision tree compresses the signal into a few readable splits:\n\n")
+cat("```\n")
+cat(paste(capture.output(print(fit_tree_q2$finalModel, digits = 2)), collapse = "\n"))
+cat("\n```\n")
+```
+
+Both importance views agree with the odds-ratio story: **bedtime phone minutes is the single most important habit**, followed by caffeine, the app category, and the blue-light filter. The tree's rule list makes the screening logic explicit — long phone sessions at bedtime and heavy post-5pm caffeine drive the Severe branch.
+
+# Discussion
+
+## What we learned
+
+Across both questions, one habit dominates everything else we measured: **how long the phone stays on after getting into bed**. It is the strongest modifiable predictor of next-day fatigue (Q1) and of severe sleep debt (Q2), with app type (short-video worst, reading best), late caffeine, and the blue-light filter playing supporting roles. The two modeling families told one coherent story — the forest and the network simply did it more accurately than the linear models, which is exactly the bias–variance trade-off we expected from ISLR: flexible models win raw error, interpretable models win explanations, and we used each for what it does best.
+
+## How we met the requirements
+
+- **Two distinct models per question:** Q1 used linear regression, random forest, and a neural network; Q2 used logistic regression, random forest, and a decision tree.
+- **Resampling:** 10-fold CV repeated 5× with *identical* folds for every model, enabling paired t-tests on per-fold errors, plus a single untouched 20% test set and bootstrap CIs on the final errors.
+- **Imbalance:** stratified splitting and folding, class-weighted forests, ROC/AUC-first metrics, and Youden threshold tuning on out-of-fold probabilities.
+
+## Limitations we want to acknowledge
+
+We would be overreaching if we called these causal effects: this is an observational dataset, and phone minutes may proxy for other unmeasured traits (anxiety, workload). The fatigue score is self-reported, so measurement error is likely and probably correlated across nights of a given person. We also noticed the response appears partly discretized (visible in the residual stripes), which caps how much any smooth model can extract. Finally, the dataset is a single cross-section — we cannot model within-person trajectories of accumulating sleep debt over time. With more data, we would add repeated measures per user (mixed models), ordinal modeling of the full 4-level debt scale, and calibrated probability outputs for clinical-style screening thresholds.
+
+# Reproducibility
+
+Every number and figure above regenerates by rendering this document with the CSV in the working directory. We set `set.seed(4322)` immediately before each random operation (split, fold construction, every `train()` call, and the bootstrap), and we run random forests single-threaded (`num.threads = 1`) so parallel scheduling cannot perturb the RNG stream.
+
+```{r}
+#| label: session
+#| echo: false
+#| results: asis
+cat("```\n")
+cat(paste(capture.output(sessionInfo()), collapse = "\n"))
+cat("\n```\n")
+```

@@ -1,0 +1,40 @@
+n= 6801 
+
+node), split, n, loss, yval, (yprob)
+      * denotes terminal node
+
+  1) root 6801 520 No (0.9238 0.0762)  
+    2) bedtime_phone_minutes< 1.1e+02 6032 180 No (0.9708 0.0292)  
+      4) bedtime_phone_minutes< 68 4501  33 No (0.9927 0.0073) *
+      5) bedtime_phone_minutes>=68 1531 140 No (0.9066 0.0934)  
+       10) chronotypeNight Owl< 0.5 1068  34 No (0.9682 0.0318) *
+       11) chronotypeNight Owl>=0.5 463 110 No (0.7646 0.2354)  
+         22) occupation_typeHealthcare / Shift Worker< 0.5 403  75 No (0.8139 0.1861)  
+           44) caffeine_post_5pm_mg< 1.5e+02 384  60 No (0.8438 0.1562) *
+           45) caffeine_post_5pm_mg>=1.5e+02 19   4 Severe (0.2105 0.7895) *
+         23) occupation_typeHealthcare / Shift Worker>=0.5 60  26 Severe (0.4333 0.5667)  
+           46) screen_brightness_pct< 41 14   3 No (0.7857 0.2143) *
+           47) screen_brightness_pct>=41 46  15 Severe (0.3261 0.6739) *
+    3) bedtime_phone_minutes>=1.1e+02 769 340 No (0.5553 0.4447)  
+      6) chronotypeNight Owl< 0.5 570 190 No (0.6596 0.3404)  
+       12) bedtime_phone_minutes< 1.4e+02 355  68 No (0.8085 0.1915)  
+         24) occupation_typeHealthcare / Shift Worker< 0.5 304  38 No (0.8750 0.1250) *
+         25) occupation_typeHealthcare / Shift Worker>=0.5 51  21 Severe (0.4118 0.5882)  
+           50) caffeine_post_5pm_mg< 28 33  14 No (0.5758 0.4242) *
+           51) caffeine_post_5pm_mg>=28 18   2 Severe (0.1111 0.8889) *
+       13) bedtime_phone_minutes>=1.4e+02 215  89 Severe (0.4140 0.5860)  
+         26) screen_brightness_pct< 48 86  36 No (0.5814 0.4186)  
+           52) caffeine_post_5pm_mg< 1.2e+02 77  27 No (0.6494 0.3506) *
+           53) caffeine_post_5pm_mg>=1.2e+02 9   0 Severe (0.0000 1.0000) *
+         27) screen_brightness_pct>=48 129  39 Severe (0.3023 0.6977)  
+           54) chronotypeMorning Lark>=0.5 44  21 No (0.5227 0.4773)  
+            108) bedtime_phone_minutes< 1.6e+02 24   7 No (0.7083 0.2917) *
+            109) bedtime_phone_minutes>=1.6e+02 20   6 Severe (0.3000 0.7000) *
+           55) chronotypeMorning Lark< 0.5 85  16 Severe (0.1882 0.8118) *
+      7) chronotypeNight Owl>=0.5 199  51 Severe (0.2563 0.7437)  
+       14) bedtime_phone_minutes< 1.3e+02 102  42 Severe (0.4118 0.5882)  
+         28) caffeine_post_5pm_mg< 37 65  28 No (0.5692 0.4308)  
+           56) screen_brightness_pct< 56 37  10 No (0.7297 0.2703) *
+           57) screen_brightness_pct>=56 28  10 Severe (0.3571 0.6429) *
+         29) caffeine_post_5pm_mg>=37 37   5 Severe (0.1351 0.8649) *
+       15) bedtime_phone_minutes>=1.3e+02 97   9 Severe (0.0928 0.9072) *
