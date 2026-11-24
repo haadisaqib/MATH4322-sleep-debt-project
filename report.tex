@@ -73,7 +73,7 @@ We held out a stratified random 20\% test set (\texttt{set.seed(4322)}) that eac
 All tuning and comparison happens on the training 80\% using \textbf{10-fold cross-validation repeated 5 times} (50 resamples). Crucially, we built the folds ourselves and gave the \emph{identical} fold list to every model, so all comparisons are paired, so we can even run t-tests on the per-fold errors instead of eyeballing two independent CV estimates.
 
 \subsection{The experiments}
-For Q1 (regression) we tried: multiple linear regression on habits, linear regression on the full spec, a random forest on the full spec, and a small neural network on the full spec. For Q2 (classification) we tried: logistic regression on habits, a weighted random forest, an unweighted random forest (so we could tell whether the class weighting itself was helping), and a single decision tree (for a readable rule list). Because only about \pctSevereTrain\% of training rows are Severe, raw accuracy would lie: an ``always No'' classifier scores about 92\%. We therefore prioritize \textbf{AUC} and \textbf{sensitivity}, weight one of the forests by inverse class frequency, and tune the classification \emph{threshold} on out-of-fold probabilities (maximizing Youden's J) instead of accepting the arbitrary 0.5 cutoff.
+For Q1 (regression) we tried: multiple linear regression on habits, linear regression on the full spec, a random forest on the full spec, and a small neural network on the full spec. For Q2 (classification) we tried: logistic regression on habits, a weighted random forest, an unweighted random forest (so we could tell whether the class weighting itself was helping), and a single decision tree (for a readable rule list). Because only about \pctSevereTrain\% of training rows are Severe, raw accuracy would lie: an ``always No'' classifier scores about 92\%. We therefore prioritize \textbf{AUC} and \textbf{sensitivity}, weight one of the random forests by inverse class frequency, and tune the classification \emph{threshold} on out-of-fold probabilities (maximizing Youden's J) instead of accepting the arbitrary 0.5 cutoff.
 
 \section{First look: what the data show}
 \lead{Haadi Saqib}
@@ -144,7 +144,7 @@ Figure~\ref{fig:q1diag} checks it. The residual plot stripes because the respons
 
 \subsection{What we tried next, and what won}
 \lead{Umar Baig (random forest and neural network)}
-We compared all four Q1 models on the same 50 CV folds (Table~\ref{tab:q1cv}, Figure~\ref{fig:q1cvbox}). Both flexible models clearly beat both linear models, and because the folds are shared, the paired t-tests in Table~\ref{tab:q1paired} are valid: every flexible-vs-linear gap is significant at $p < 0.001$. Between the two flexible models we got a small surprise: the tiny neural network (CV RMSE \cvRmseNn{}) edged out the random forest (\cvRmseRf{}), significant but a hair-thin margin (mean paired difference 0.03). Our reading: the signal here is smooth, so a small single-layer network tracks it well, while the forest pays a little for its stepping-function splits. We still report both: the forest gives us variable importance we can actually look at; the network gives us a prediction and a shrug. H3 looks supported too: the flexible model predicts better, the linear model explains.
+We compared all four Q1 models on the same 50 CV folds (Table~\ref{tab:q1cv}, Figure~\ref{fig:q1cvbox}). Both flexible models clearly beat both linear models, and because the folds are shared, the paired t-tests in Table~\ref{tab:q1paired} are valid: every flexible-vs-linear gap is significant at $p < 0.001$. Between the two flexible models we got a small surprise: the tiny neural network (CV RMSE \cvRmseNn{}) edged out the random forest (\cvRmseRf{}), significant but a hair-thin margin (mean paired difference 0.03). Our reading: the signal here is smooth, so a small single-layer network tracks it well, while the random forest pays a little for its stepping-function splits. We still report both: the random forest gives us variable importance we can actually look at; the network gives us a prediction and a shrug. H3 looks supported too: the flexible model predicts better, the linear model explains.
 
 \begin{table}[htbp]
 \centering
@@ -167,7 +167,7 @@ We compared all four Q1 models on the same 50 CV folds (Table~\ref{tab:q1cv}, Fi
 \input{tables/tab_q1_paired}
 \end{table}
 
-Finally we scored everything once on the untouched test set (Table~\ref{tab:q1test}). The two flexible models land together at the top: the neural network at RMSE \testRmseNn{} and the random forest at \testRmseRf{} (both $R^2 \approx 0.94$), versus about \testRmseLmh{} for the habits-only linear model. A bootstrap of the test set (1{,}000 resamples) puts a 95\% CI of [\bootRmseLo{}, \bootRmseHi{}] on the forest's test RMSE. In plain terms: our best models predict next-day fatigue to within about 0.65 points on a 1--10 scale. And only the linear model can say which habit moves the needle.
+Finally we scored everything once on the untouched test set (Table~\ref{tab:q1test}). The two flexible models land together at the top: the neural network at RMSE \testRmseNn{} and the random forest at \testRmseRf{} (both $R^2 \approx 0.94$), versus about \testRmseLmh{} for the habits-only linear model. A bootstrap of the test set (1{,}000 resamples) puts a 95\% CI of [\bootRmseLo{}, \bootRmseHi{}] on the random forest's test RMSE. In plain terms: our best models predict next-day fatigue to within about 0.65 points on a 1--10 scale. And only the linear model can say which habit moves the needle.
 
 \begin{table}[htbp]
 \centering
@@ -178,7 +178,7 @@ Finally we scored everything once on the untouched test set (Table~\ref{tab:q1te
 
 \subsection{What drives fatigue}
 \lead{Umar Baig}
-Figure~\ref{fig:q1imp} ranks the forest's predictors. Total sleep hours, deep-sleep share, and morning snoozes dominate the full spec, and, importantly for us, \textbf{bedtime phone minutes is the strongest habit-side driver}, with chronotype next. The flexible model rediscovers the physiology we hid from it, but still says the phone is the lever we control.
+Figure~\ref{fig:q1imp} ranks the random forest's predictors. Total sleep hours, deep-sleep share, and morning snoozes dominate the full spec, and, importantly for us, \textbf{bedtime phone minutes is the strongest habit-side driver}, with chronotype next. The flexible model rediscovers the physiology we hid from it, but still says the phone is the lever we control.
 
 \begin{figure}[htbp]
 \centering
@@ -202,9 +202,9 @@ Table~\ref{tab:or} reads the logistic regression in plain language. Each extra 3
 
 \subsection{What we tried, and what won}
 \lead{Joseph Giap \& Elias Angeles}
-Table~\ref{tab:q2cv} and Figure~\ref{fig:q2cvbox} compare the four classifiers on the shared folds, and Table~\ref{tab:q2paired} gives the paired tests. This result surprised us: \textbf{plain logistic regression won}. Its CV AUC (\cvAucGlm{}) edges out both forests, and the paired tests say the gap is real, not fold noise ($p < 0.001$). The single tree trails everything, as expected, but earns its keep as a readable rule list at the end of this section.
+Table~\ref{tab:q2cv} and Figure~\ref{fig:q2cvbox} compare the four classifiers on the shared folds, and Table~\ref{tab:q2paired} gives the paired tests. This result surprised us: \textbf{plain logistic regression won}. Its CV AUC (\cvAucGlm{}) edges out both random forests, and the paired tests say the gap is real, not fold noise ($p < 0.001$). The single tree trails everything, as expected, but earns its keep as a readable rule list at the end of this section.
 
-To check that the class weighting was not the whole story, we ran a second forest with the same tuning and no weights. It matched the weighted one to three decimal places (paired difference $0.000$, $p = 0.38$); the weighting changes the forest's probabilities, not its AUC, and neither could catch the logistic model (Table~\ref{tab:q2cv}). Our reading: the signal in this data is close to linear on the log-odds scale, so the extra flexibility of the forest buys variance without buying much signal, exactly the situation ISLR warns flexible models can lose. H2 is still supported (habits alone reach AUC well above 0.5), but with a twist we did not expect: \textbf{the simplest model is the best classifier here}, and phone minutes still top the importance ranking (Figure~\ref{fig:q2imp}).
+To check that the class weighting was not the whole story, we ran a second random forest with the same tuning and no weights. It matched the weighted one to three decimal places (paired difference $0.000$, $p = 0.38$); the weighting changes the random forest's probabilities, not its AUC, and neither could catch the logistic model (Table~\ref{tab:q2cv}). Our reading: the signal in this data is close to linear on the log-odds scale, so the extra flexibility of the random forest buys variance without buying much signal, exactly the situation ISLR warns flexible models can lose. H2 is still supported (habits alone reach AUC well above 0.5), but with a twist we did not expect: \textbf{the simplest model is the best classifier here}, and phone minutes still top the importance ranking (Figure~\ref{fig:q2imp}).
 
 \begin{table}[htbp]
 \centering
@@ -240,7 +240,7 @@ For each classifier we generated out-of-fold probabilities on the training set (
 
 \subsection{Test results}
 \lead{Elias Angeles}
-Table~\ref{tab:q2test} and Figure~\ref{fig:q2roc} give the final verdict on the held-out set. Logistic regression takes it: AUC \testAucGlm{} (bootstrap 95\% CI [\bootAucLo{}, \bootAucHi{}]), with sensitivity \sensGlm{} at specificity \specGlm{} using its Youden-tuned threshold. The two forests land close together behind it (weighted \testAucRf{}, plain \testAucRfNW{}), and the tree brings up the rear. Figure~\ref{fig:q2probs} shows why the threshold matters: instead of the default cutoff that flags almost nobody, our tuned threshold catches about two-thirds-plus of true severe cases while keeping false alarms manageable. For a screening use case (``should this person tighten their bedtime routine?''), we would happily trade even more specificity for sensitivity.
+Table~\ref{tab:q2test} and Figure~\ref{fig:q2roc} give the final verdict on the held-out set. Logistic regression takes it: AUC \testAucGlm{} (bootstrap 95\% CI [\bootAucLo{}, \bootAucHi{}]), with sensitivity \sensGlm{} at specificity \specGlm{} using its Youden-tuned threshold. The two random forests land close together behind it (weighted \testAucRf{}, plain \testAucRfNW{}), and the tree brings up the rear. Figure~\ref{fig:q2probs} shows why the threshold matters: instead of the default cutoff that flags almost nobody, our tuned threshold catches about two-thirds-plus of true severe cases while keeping false alarms manageable. For a screening use case (``should this person tighten their bedtime routine?''), we would happily trade even more specificity for sensitivity.
 
 \begin{table}[htbp]
 \centering
@@ -279,9 +279,9 @@ The pruned tree compresses the same signal into a few readable splits (long phon
 \subsection{What we found}
 All three hypotheses held up, with two caveats worth owning:
 \begin{itemize}
-  \item \textbf{H1 (phone minutes $\rightarrow$ fatigue): supported.} Positive, significant in the linear model, and the top habit in the forest's ranking.
+  \item \textbf{H1 (phone minutes $\rightarrow$ fatigue): supported.} Positive, significant in the linear model, and the top habit in the random forest's ranking.
   \item \textbf{H2 (habits alone can flag severe debt): supported.} CV AUC \cvAucGlm{} from habits only: nowhere near perfect, but far from a coin flip, and phone minutes led every importance ranking.
-  \item \textbf{H3 (flexible beats linear at prediction): mostly supported.} For regression, both flexible models crushed the linear baselines ($p < 0.001$), with the neural network a hair ahead of the forest. For classification, the surprise went the other way: plain logistic regression significantly beat both forests. The pattern we take away: flexibility pays when the response is hard to write down, but when the signal is close to linear on the log-odds scale, the interpretable model is also the best predictor. And in every case, the linear model is the only one that explains.
+  \item \textbf{H3 (flexible beats linear at prediction): mostly supported.} For regression, both flexible models crushed the linear baselines ($p < 0.001$), with the neural network a hair ahead of the random forest. For classification, the surprise went the other way: plain logistic regression significantly beat both random forests. The pattern we take away: flexibility pays when the response is hard to write down, but when the signal is close to linear on the log-odds scale, the interpretable model is also the best predictor. And in every case, the linear model is the only one that explains.
 \end{itemize}
 The single strongest modifiable habit across both problems is \textbf{how long the phone stays on after getting into bed}. App type matters (short-video worst, reading best), the blue-light filter helps, and late caffeine hurts.
 
@@ -289,7 +289,7 @@ The single strongest modifiable habit across both problems is \textbf{how long t
 We would be overreaching to call these causal effects: this is observational data, and phone minutes may proxy for things we cannot see (stress, workload). Fatigue is self-reported, so it carries measurement error. The response is effectively discretized (visible in the residual stripes), which caps what any smooth model can extract. And this is a single snapshot, so we cannot watch sleep debt accumulate within a person over time.
 
 \subsection{What we would try next}
-With more time we would add repeated measures per user (mixed models), model the full four-level debt scale directly with an ordinal model, and calibrate the probabilities so the threshold means something clinical. We would also revisit the neural network with more tuning budget. It edged out the forest in Experiment 1, and we suspect a bigger budget would widen the gap.
+With more time we would add repeated measures per user (mixed models), model the full four-level debt scale directly with an ordinal model, and calibrate the probabilities so the threshold means something clinical. We would also revisit the neural network with more tuning budget. It edged out the random forest in Experiment 1, and we suspect a bigger budget would widen the gap.
 
 \appendix
 \section{Reproducibility}
